@@ -1,0 +1,99 @@
+---
+title: "PRUEBA CORREGIDA"
+author: "Mariana Amaro"
+format: html
+editor: visual
+---
+
+```{r}
+# Librerías necesarias
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(tidyr)
+library(viridis)
+
+# Suponemos que ya cargaste las tablas como:
+# training_dataset
+# sra_metadata
+
+# 1. Procesar columnas de especie (juntar genus y species)
+training_dataset <- training_dataset %>%
+  mutate(
+    accession = as.character(accession),
+    full_name = str_squish(paste(genus, species)),
+    training_species = word(full_name, 1, 2)
+  ) %>%
+  select(accession, training_species)
+
+# 2. Procesar ScientificName (quedarse con 2 primeras palabras)
+sra_metadata <- sra_metadata %>%
+  mutate(
+    Run = as.character(Run),
+    sra_species = word(ScientificName, 1, 2)
+  ) %>%
+  select(Run, sra_species)
+
+# 3. Unir datasets por accession/Run
+comparison <- full_join(training_dataset, sra_metadata, 
+                        by = c("accession" = "Run"))
+
+# 4. Identificar diferencias
+comparison <- comparison %>%
+  mutate(
+    match_status = case_when(
+      is.na(training_species) | is.na(sra_species) ~ "Missing",
+      training_species == sra_species ~ "Match",
+      TRUE ~ "Mismatch"
+    )
+  )
+
+# 5. Ver accesiones con especies distintas
+discrepancies <- comparison %>%
+  filter(match_status == "Mismatch")
+
+# Mostrar los primeros registros discrepantes
+print(head(discrepancies, 10))
+
+# Guardar tabla de discrepancias si lo deseas
+write.csv(discrepancies, "discrepancias_especies.csv", row.names = FALSE)
+
+# 6. Gráficos bonitos
+# a) Conteo de coincidencias vs discrepancias
+ggplot(comparison, aes(x = match_status, fill = match_status)) +
+  geom_bar(show.legend = FALSE) +
+  scale_fill_viridis_d() +
+  theme_minimal(base_size = 14) +
+  labs(title = "Comparación de especies por accession",
+       x = "Estado de coincidencia",
+       y = "Número de accesiones")
+
+# b) Especies más frecuentes con discrepancias
+top_species <- discrepancies %>%
+  count(training_species, sra_species, sort = TRUE) %>%
+  top_n(10)
+
+ggplot(top_species, aes(x = reorder(paste(training_species, sra_species, sep = " vs "), n),
+                        y = n, fill = n)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_viridis_c() +
+  theme_minimal(base_size = 13) +
+  labs(title = "Top 10 diferencias de especies",
+       x = "training vs sra species",
+       y = "Frecuencia")
+
+# c) Heatmap (opcional)
+heatmap_data <- discrepancies %>%
+  count(training_species, sra_species)
+
+ggplot(heatmap_data, aes(x = training_species, y = sra_species, fill = n)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c() +
+  theme_minimal(base_size = 12) +
+  labs(title = "Heatmap de diferencias entre especies",
+       x = "Training Dataset Species",
+       y = "SRA Metadata Species") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```

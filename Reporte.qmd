@@ -1,0 +1,284 @@
+---
+title: "Reporte análisis de datos"
+author: "Mariana Amaro"
+format: html
+editor: visual
+---
+
+**Datos erroneós encontrados en la metadata de CAMDA en contraste a la metadata de NCBI**
+
+Cargar datos
+
+```{r}
+#| message: false
+library(tidyverse)
+library(knitr)
+library(scales)
+
+# Suponiendo que las tablas ya están cargadas en tu ambiente R
+# Si no, deberías cargarlas con:
+#CAMDA_Metadata <-"CAMDA_Metadata.xlsx"
+#NCBI_Metadata <- "NCBI_Metadata.xlsx"
+
+
+
+# Verificamos las columnas disponibles
+cat("Columnas en CAMDA_Metadata:\n")
+names(CAMDA_Metadata)
+
+cat("\nColumnas en NCBI_Metadata:\n")
+names(NCBI_Metadata)
+```
+
+### Normalizar los titulos y crear tablas de categorías
+
+```{r}
+# 2. Normalización de columnas (ajusta según los nombres reales)
+#  Si los nombres son diferentes 
+CAMDA_clean <- CAMDA_Metadata %>%
+  rename_with(tolower) %>% # Primero convertir todo a minúsculas
+  rename(
+    accession = matches("accesion|accession"), # Busca cualquier variante
+    genus_CAMDA = matches("genus|genero|género") # Busca cualquier variante de género
+  ) %>%
+  mutate(
+    genus_CAMDA = as.character(genus_CAMDA),
+    genus_CAMDA = ifelse(tolower(genus_CAMDA) == "undefined", NA, genus_CAMDA)
+  ) %>%
+  select(accession, genus_CAMDA)
+```
+
+```{r}
+# Hacer lo mismo para NCBI
+NCBI_clean <- NCBI_Metadata %>%
+  rename_with(tolower) %>%
+  rename(
+    accession = matches("accesion|accession"),
+    organism_NCBI = matches("organism|organismo")
+  ) %>%
+  mutate(
+    organism_NCBI = as.character(organism_NCBI),
+    genus_NCBI = str_extract(organism_NCBI, "^[^ ]+"), # Extrae la primera palabra
+    genus_NCBI = ifelse(tolower(genus_NCBI) == "undefined", NA, genus_NCBI)
+  ) %>%
+  select(accession, genus_NCBI) %>%
+  filter(!is.na(genus_NCBI))
+```
+
+Verificar antes de continuar que tenemos los titulos en las tablas limpias
+
+```{r}
+# 3. Verificar que las columnas existen antes de continuar
+stopifnot("accession" %in% names(CAMDA_clean))
+stopifnot("genus_CAMDA" %in% names(CAMDA_clean))
+stopifnot("accession" %in% names(NCBI_clean))
+stopifnot("genus_NCBI" %in% names(NCBI_clean))
+
+```
+
+```{r}
+# 4. Identificar y manejar duplicados antes de unir
+CAMDA_clean <- CAMDA_clean %>%
+  group_by(accession) %>%
+  mutate(
+    dup_count = n(),
+    genus_CAMDA = ifelse(dup_count > 1, 
+                        paste(genus_CAMDA, "(duplicado)", sep = " "), 
+                        genus_CAMDA)
+  ) %>%
+  ungroup()
+
+NCBI_clean <- NCBI_clean %>%
+  group_by(accession) %>%
+  mutate(
+    dup_count = n(),
+    genus_NCBI = ifelse(dup_count > 1, 
+                       paste(genus_NCBI, "(duplicado)", sep = " "), 
+                       genus_NCBI)
+  ) %>%
+  ungroup()
+
+# 2. Opción A: Conservar solo la primera ocurrencia de cada accession
+CAMDA_unique <- CAMDA_clean %>%
+  distinct(accession, .keep_all = TRUE)
+
+NCBI_unique <- NCBI_clean %>%
+  distinct(accession, .keep_all = TRUE)
+
+# 3. Unión segura
+metadata_joined <- inner_join(
+  CAMDA_unique,
+  NCBI_unique,
+  by = "accession"
+) %>%
+  filter(!is.na(genus_CAMDA), !is.na(genus_NCBI)) %>%
+  mutate(
+    genus_match = genus_CAMDA == genus_NCBI,
+    genus_match = factor(genus_match, levels = c(TRUE, FALSE), 
+                       labels = c("Coincide", "No coincide"))
+  )
+```
+
+Análisis de duplicados
+
+```{r}
+ #4. Análisis de duplicados (para reporte)
+duplicados_CAMDA <- CAMDA_clean %>%
+  count(accession) %>%
+  filter(n > 1)
+
+duplicados_NCBI <- NCBI_clean %>%
+  count(accession) %>%
+  filter(n > 1)
+```
+
+```{r}
+# 5. Gráfico de comparación
+ggplot(metadata_joined, aes(x = genus_match)) +
+  geom_bar(aes(fill = genus_match)) +
+  geom_text(aes(label = ..count..), stat = "count", vjust = -0.5) +
+  labs(title = "Comparación de géneros entre CAMDA y NCBI",
+       subtitle = paste("Registros únicos analizados:", nrow(metadata_joined)),
+       x = "Resultado de comparación",
+       y = "Número de registros") +
+  theme_minimal()
+```
+
+```{r}
+# 6. Reporte de duplicados encontrados
+if(nrow(duplicados_CAMDA) > 0) {
+  cat("\nADVERTENCIA: Se encontraron", nrow(duplicados_CAMDA), 
+      "accessions duplicados en CAMDA\n")
+  print(duplicados_CAMDA)
+}
+
+if(nrow(duplicados_NCBI) > 0) {
+  cat("\nADVERTENCIA: Se encontraron", nrow(duplicados_NCBI), 
+      "accessions duplicados en NCBI\n")
+  print(duplicados_NCBI)
+}
+```
+
+```{r}
+# Ver registros duplicados completos en CAMDA
+CAMDA_duplicados_completos <- CAMDA_Metadata %>%
+  filter(accession %in% duplicados_CAMDA$accession) %>%
+  arrange(accession)
+
+```
+
+
+
+```{r}
+# 1. Primero procesamos los datos sin marcar duplicados en el género
+CAMDA_clean <- CAMDA_Metadata %>%
+  rename_with(tolower) %>%
+  rename(
+    accession = matches("accesion|accession"),
+    genus_CAMDA = matches("genus|genero|género")
+  ) %>%
+  mutate(
+    genus_CAMDA = as.character(genus_CAMDA),
+    genus_CAMDA = ifelse(tolower(genus_CAMDA) == "undefined", NA, genus_CAMDA)
+  ) %>%
+  select(accession, genus_CAMDA)
+
+NCBI_clean <- NCBI_Metadata %>%
+  rename_with(tolower) %>%
+  rename(
+    accession = matches("accesion|accession"),
+    organism_NCBI = matches("organism|organismo")
+  ) %>%
+  mutate(
+    organism_NCBI = as.character(organism_NCBI),
+    genus_NCBI = str_extract(organism_NCBI, "^[^ ]+"),
+    genus_NCBI = ifelse(tolower(genus_NCBI) == "undefined", NA, genus_NCBI)
+  ) %>%
+  select(accession, genus_NCBI) %>%
+  filter(!is.na(genus_NCBI))
+
+# 2. Identificamos duplicados pero sin modificar los géneros
+CAMDA_dups <- CAMDA_clean %>%
+  group_by(accession) %>%
+  mutate(
+    n_duplicados_CAMDA = n(),
+    es_duplicado_CAMDA = n_duplicados_CAMDA > 1
+  ) %>%
+  ungroup()
+
+NCBI_unique <- NCBI_clean %>%
+  distinct(accession, .keep_all = TRUE)
+
+# 3. Unión y comparación inteligente
+metadata_joined <- CAMDA_dups %>%
+  inner_join(NCBI_unique, by = "accession") %>%
+  filter(!is.na(genus_CAMDA), !is.na(genus_NCBI)) %>%
+  group_by(accession) %>%
+  mutate(
+    # Verificar si todos los géneros en CAMDA coinciden con NCBI
+    todos_coinciden = all(genus_CAMDA == genus_NCBI),
+    alguno_coincide = any(genus_CAMDA == genus_NCBI),
+    
+    # Determinar el estado de coincidencia
+    match_status = case_when(
+      !es_duplicado_CAMDA & genus_CAMDA == genus_NCBI ~ "Coincide (único)",
+      es_duplicado_CAMDA & todos_coinciden ~ "Coincide (todos duplicados)",
+      es_duplicado_CAMDA & alguno_coincide ~ "Coincide parcialmente",
+      es_duplicado_CAMDA & !alguno_coincide ~ "No coincide (todos difieren)",
+      TRUE ~ "No coincide"
+    )
+  ) %>%
+  ungroup()
+
+# 4. Resumen estadístico
+resumen_comparacion <- metadata_joined %>%
+  count(match_status) %>%
+  mutate(porcentaje = n / sum(n) * 100)
+
+# 5. Visualización
+ggplot(resumen_comparacion, aes(x = reorder(match_status, -n), y = n, fill = match_status)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(porcentaje, 1), "% (n=", n, ")")), 
+            vjust = -0.3, size = 3.5) +
+  labs(
+    title = "Comparación de géneros entre CAMDA y NCBI",
+    subtitle = "Análisis considerando duplicados",
+    x = "Estado de coincidencia",
+    y = "Número de accessions"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# 6. Listado de conflictos reales
+conflictos_reales <- metadata_joined %>%
+  filter(match_status %in% c("No coincide (todos difieren)", "No coincide")) %>%
+  select(accession, genus_CAMDA, genus_NCBI, n_duplicados_CAMDA, match_status) %>%
+  distinct()
+```
+
+```{r}
+# Crear tabla de discrepancias
+discrepancias <- metadata_joined %>%
+  # Filtrar solo los casos que no coinciden completamente
+  filter(match_status %in% c("No coincide (todos difieren)", "No coincide", "Coincide parcialmente")) %>%
+  # Seleccionar columnas relevantes
+  select(accession, genus_CAMDA, genus_NCBI, n_duplicados_CAMDA, match_status) %>%
+  # Para los duplicados, agrupar por accession y mostrar todas las variantes
+  group_by(accession) %>%
+  summarise(
+    Generos_CAMDA = paste(unique(genus_CAMDA), collapse = ", "),
+    Genero_NCBI = first(genus_NCBI),  # En NCBI ya asumimos que no hay duplicados
+    N_Duplicados = first(n_duplicados_CAMDA),
+    Estado_Coincidencia = first(match_status),
+    .groups = "drop"
+  ) %>%
+  # Ordenar por número de duplicados (los más problemáticos primero)
+  arrange(desc(N_Duplicados), Estado_Coincidencia)
+
+# Mostrar tabla de discrepancias
+kable(discrepancias, caption = "Registros con discrepancias entre CAMDA y NCBI") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+# Opcional: Exportar a CSV
+write_csv(discrepancias, "discrepancias_CAMDA_NCBI.csv")
+```
